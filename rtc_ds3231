@@ -1,0 +1,124 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity rtc_ds3231 is
+    port (
+        clk_50m      : in std_logic;
+        sda          : inout std_logic;
+        scl          : out std_logic;
+        set_time_btn : in std_logic; 
+        
+        sec_out      : out std_logic_vector(7 downto 0);
+        min_out      : out std_logic_vector(7 downto 0);
+        hour_out     : out std_logic_vector(7 downto 0);
+        day_out      : out std_logic_vector(2 downto 0)
+    );
+end entity;
+
+architecture behavior of rtc_ds3231 is
+    type state_type is (
+        IDLE, START, SEND_ADDR_W, ACK_1, SEND_PTR, ACK_2, 
+        RESTART, SEND_ADDR_R, ACK_3, 
+        READ_SEC, ACK_4, READ_MIN, ACK_5, READ_HOUR, ACK_6, READ_DAY, NACK_7, STOP,
+        -- Estados de Escritura (La vía alterna)
+        WR_START, WR_ADDR, WR_ACK1, WR_PTR, WR_ACK2, 
+        WR_SEC, WR_ACK3, WR_MIN, WR_ACK4, WR_HOUR, WR_ACK5, WR_DAY, WR_ACK6, WR_STOP
+    );
+    signal state : state_type := IDLE;
+    
+
+    -- CONFIGURA AQUÍ LA HORA QUE QUIERES CARGAR AL PRESIONAR BOTÓN
+	 
+    constant SET_SEC  : std_logic_vector(7 downto 0) := x"00";
+    constant SET_MIN  : std_logic_vector(7 downto 0) := x"00"; -- Minutos
+    constant SET_HOUR : std_logic_vector(7 downto 0) := x"00"; -- Hora (24h)
+    constant SET_DAY  : std_logic_vector(7 downto 0) := x"01"; -- 1=Lun, 2=Mar, 3=Mie...
+
+    signal i2c_clk_cnt : integer range 0 to 500 := 0; 
+    signal phase       : integer range 0 to 3 := 0;
+    signal bit_cnt     : integer range 0 to 7 := 0;
+    
+    signal sda_out     : std_logic := '1';
+    signal sda_enable  : std_logic := '1';
+    signal scl_int     : std_logic := '1';
+    signal sec_reg, min_reg, hour_reg, day_reg : std_logic_vector(7 downto 0);
+
+begin
+    sda <= '0' when (sda_enable = '1' and sda_out = '0') else 'Z';
+    scl <= scl_int;
+
+    process(clk_50m)
+    begin
+        if rising_edge(clk_50m) then
+            if i2c_clk_cnt < 125 then 
+                i2c_clk_cnt <= i2c_clk_cnt + 1;
+            else
+                i2c_clk_cnt <= 0;
+                if phase = 3 then phase <= 0; else phase <= phase + 1; end if;
+                
+                case state is
+                    -- ================= ESTACIÓN CENTRAL (DECISIÓN) =================
+                    when IDLE =>
+                        scl_int <= '1'; sda_out <= '1'; sda_enable <= '1';
+                        if phase = 3 then 
+                            -- ¿EL BOTÓN K3 ESTÁ PRESIONADO? (Nivel Bajo '0')
+                            if set_time_btn = '0' then
+                                state <= WR_START; -- ¡SÍ! VAMOS A ESCRIBIR
+                            else
+                                state <= START;    -- NO, SEGUIMOS LEYENDO NORMAL
+                            end if;
+                        end if;
+                        
+                    -- ================= VÍA 1: LECTURA NORMAL =================
+                    when START => 
+                        if phase=0 then sda_out<='0'; end if; if phase=2 then scl_int<='0'; end if; if phase=3 then state<=SEND_ADDR_W; bit_cnt<=7; end if;
+                    when SEND_ADDR_W => -- 0xD0 (Write para decir qué queremos leer)
+                        if phase=0 then if bit_cnt=7 or bit_cnt=6 or bit_cnt=4 then sda_out<='1'; else sda_out<='0'; end if; end if;
+                        if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; if bit_cnt=0 then state<=ACK_1; else bit_cnt<=bit_cnt-1; end if; end if;
+                    when ACK_1 => if phase=0 then sda_enable<='0'; end if; if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; sda_enable<='1'; state<=SEND_PTR; bit_cnt<=7; end if;
+                    when SEND_PTR => -- 0x00 (Puntero a segundos)
+                        if phase=0 then sda_out<='0'; end if; if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; if bit_cnt=0 then state<=ACK_2; else bit_cnt<=bit_cnt-1; end if; end if;
+                    when ACK_2 => if phase=0 then sda_enable<='0'; end if; if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; sda_enable<='1'; state<=RESTART; end if;
+                    when RESTART => if phase=0 then sda_out<='1'; end if; if phase=1 then scl_int<='1'; end if; if phase=2 then sda_out<='0'; end if; if phase=3 then scl_int<='0'; state<=SEND_ADDR_R; bit_cnt<=7; end if;
+                    when SEND_ADDR_R => -- 0xD1 (Read)
+                        if phase=0 then if bit_cnt=7 or bit_cnt=6 or bit_cnt=4 or bit_cnt=0 then sda_out<='1'; else sda_out<='0'; end if; end if;
+                        if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; if bit_cnt=0 then state<=ACK_3; else bit_cnt<=bit_cnt-1; end if; end if;
+                    when ACK_3 => if phase=0 then sda_enable<='0'; end if; if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; state<=READ_SEC; bit_cnt<=7; end if; 
+                    when READ_SEC => if phase=1 then scl_int<='1'; sec_reg(bit_cnt)<=sda; end if; if phase=3 then scl_int<='0'; if bit_cnt=0 then state<=ACK_4; else bit_cnt<=bit_cnt-1; end if; end if;
+                    when ACK_4 => if phase=0 then sda_enable<='1'; sda_out<='0'; end if; if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; sda_enable<='0'; state<=READ_MIN; bit_cnt<=7; end if;
+                    when READ_MIN => if phase=1 then scl_int<='1'; min_reg(bit_cnt)<=sda; end if; if phase=3 then scl_int<='0'; if bit_cnt=0 then state<=ACK_5; else bit_cnt<=bit_cnt-1; end if; end if;
+                    when ACK_5 => if phase=0 then sda_enable<='1'; sda_out<='0'; end if; if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; sda_enable<='0'; state<=READ_HOUR; bit_cnt<=7; end if;
+                    when READ_HOUR => if phase=1 then scl_int<='1'; hour_reg(bit_cnt)<=sda; end if; if phase=3 then scl_int<='0'; if bit_cnt=0 then state<=ACK_6; else bit_cnt<=bit_cnt-1; end if; end if;
+                    when ACK_6 => if phase=0 then sda_enable<='1'; sda_out<='0'; end if; if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; sda_enable<='0'; state<=READ_DAY; bit_cnt<=7; end if;
+                    when READ_DAY => if phase=1 then scl_int<='1'; day_reg(bit_cnt)<=sda; end if; if phase=3 then scl_int<='0'; if bit_cnt=0 then state<=NACK_7; else bit_cnt<=bit_cnt-1; end if; end if;
+                    when NACK_7 => if phase=0 then sda_enable<='1'; sda_out<='1'; end if; if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; state<=STOP; end if;
+                    when STOP => if phase=0 then sda_out<='0'; end if; if phase=1 then scl_int<='1'; end if; if phase=2 then sda_out<='1'; end if; if phase=3 then state<=IDLE; end if;
+
+                    -- ================= VÍA 2: ESCRITURA (AL PRESIONAR K3) =================
+                    when WR_START => 
+                        if phase=0 then sda_out<='0'; end if; if phase=2 then scl_int<='0'; end if; if phase=3 then state<=WR_ADDR; bit_cnt<=7; end if;
+                    when WR_ADDR => -- 0xD0 (Write)
+                        if phase=0 then if bit_cnt=7 or bit_cnt=6 or bit_cnt=4 then sda_out<='1'; else sda_out<='0'; end if; end if;
+                        if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; if bit_cnt=0 then state<=WR_ACK1; else bit_cnt<=bit_cnt-1; end if; end if;
+                    when WR_ACK1 => if phase=0 then sda_enable<='0'; end if; if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; sda_enable<='1'; state<=WR_PTR; bit_cnt<=7; end if;
+                    when WR_PTR => -- 0x00 (Puntero a donde empezar a escribir)
+                        if phase=0 then sda_out<='0'; end if; if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; if bit_cnt=0 then state<=WR_ACK2; else bit_cnt<=bit_cnt-1; end if; end if;
+                    when WR_ACK2 => if phase=0 then sda_enable<='0'; end if; if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; sda_enable<='1'; state<=WR_SEC; bit_cnt<=7; end if;
+                    when WR_SEC => if phase=0 then sda_out<=SET_SEC(bit_cnt); end if; if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; if bit_cnt=0 then state<=WR_ACK3; else bit_cnt<=bit_cnt-1; end if; end if;
+                    when WR_ACK3 => if phase=0 then sda_enable<='0'; end if; if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; sda_enable<='1'; state<=WR_MIN; bit_cnt<=7; end if;
+                    when WR_MIN => if phase=0 then sda_out<=SET_MIN(bit_cnt); end if; if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; if bit_cnt=0 then state<=WR_ACK4; else bit_cnt<=bit_cnt-1; end if; end if;
+                    when WR_ACK4 => if phase=0 then sda_enable<='0'; end if; if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; sda_enable<='1'; state<=WR_HOUR; bit_cnt<=7; end if;
+                    when WR_HOUR => if phase=0 then sda_out<=SET_HOUR(bit_cnt); end if; if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; if bit_cnt=0 then state<=WR_ACK5; else bit_cnt<=bit_cnt-1; end if; end if;
+                    when WR_ACK5 => if phase=0 then sda_enable<='0'; end if; if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; sda_enable<='1'; state<=WR_DAY; bit_cnt<=7; end if;
+                    when WR_DAY => if phase=0 then sda_out<=SET_DAY(bit_cnt); end if; if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; if bit_cnt=0 then state<=WR_ACK6; else bit_cnt<=bit_cnt-1; end if; end if;
+                    when WR_ACK6 => if phase=0 then sda_enable<='0'; end if; if phase=1 then scl_int<='1'; end if; if phase=3 then scl_int<='0'; sda_enable<='1'; state<=WR_STOP; end if;
+                    when WR_STOP => if phase=0 then sda_out<='0'; end if; if phase=1 then scl_int<='1'; end if; if phase=2 then sda_out<='1'; end if; if phase=3 then state<=IDLE; end if;
+
+                    when others => state <= IDLE;
+                end case;
+            end if;
+        end if;
+    end process;
+    sec_out<=sec_reg; min_out<=min_reg; hour_out<=hour_reg; day_out<=day_reg(2 downto 0);
+end behavior;
