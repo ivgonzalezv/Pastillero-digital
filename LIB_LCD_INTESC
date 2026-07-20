@@ -163,5 +163,4 @@ begin
 
     BD_LCD <= INST(DIR_MEM)(7 downto 0);
     RS     <= INST(DIR_MEM)(8); 
-end architecture Behavioral
 end architecture Behavioral;
