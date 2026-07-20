@@ -1,0 +1,206 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity pastillero_top is
+    port (
+        clk     : in std_logic; 
+        
+        -- BOTÓN PARA EL PIN 91 (Configura hora / Silencia alarma)
+        btn_config : in std_logic; 
+        
+        sda     : inout std_logic; 
+        scl     : out std_logic;   
+        
+        lcd_rs  : out std_logic;
+        lcd_rw  : out std_logic;
+        lcd_ena : out std_logic;
+        lcd_data: out std_logic_vector(7 downto 0);
+        
+        led_lun : out std_logic; led_mar : out std_logic; led_mier: out std_logic; 
+        led_jue : out std_logic; led_vie : out std_logic; led_sab : out std_logic; led_dom : out std_logic;
+        
+        buzzer  : out std_logic
+    );
+end entity;
+
+architecture main of pastillero_top is
+    -- Señales directas leídas del RTC
+    signal rtc_sec, rtc_min, rtc_hour : std_logic_vector(7 downto 0);
+    signal rtc_day : std_logic_vector(2 downto 0);
+    signal alarm_active : std_logic := '0';
+    
+    -- === REGISTROS PARA LA LCD (Sincronizados y estables) ===
+    signal lcd_sec, lcd_min, lcd_hour : std_logic_vector(7 downto 0) := (others => '0');
+    signal lcd_day                    : std_logic_vector(2 downto 0) := "001";
+    signal seg_anterior               : std_logic_vector(7 downto 0) := (others => '0');
+    
+    -- === SEÑALES DE CONTROL INTELIGENTE DEL BOTÓN Y ALARMA ===
+    signal btn_config_filtrado : std_logic := '1'; -- '1' es inactivo (botón activo en bajo '0')
+    signal timer_arranque      : integer range 0 to 100_000_000 := 0; -- 2 segundos a 50MHz
+    signal arranque_listo      : std_logic := '0';
+    signal alarma_silenciada   : std_logic := '0'; -- Bandera para recordar que el usuario ya apagó la alarma
+    
+   -- === CONFIGURACIÓN DE MÚLTIPLES ALARMAS ===
+    -- Alarma 1: Lunes a Viernes 
+    constant ALARMA1_HORA : std_logic_vector(7 downto 0) := x"22"; 
+    constant ALARMA1_MIN  : std_logic_vector(7 downto 0) := x"16";
+    
+    -- Alarma 2: Todos los días 
+    constant ALARMA2_HORA : std_logic_vector(7 downto 0) := x"21"; 
+    constant ALARMA2_MIN  : std_logic_vector(7 downto 0) := x"17";
+    
+    -- Alarma 3: Sábados y Domingos 
+    constant ALARMA3_HORA : std_logic_vector(7 downto 0) := x"21"; 
+    constant ALARMA3_MIN  : std_logic_vector(7 downto 0) := x"18";
+
+    -- Señales internas para saber cuál alarma se disparó
+    signal coincidencia_al1 : std_logic;
+    signal coincidencia_al2 : std_logic;
+    signal coincidencia_al3 : std_logic;
+    signal coincidencia_total : std_logic; -- Se activa si cualquiera de las anteriores se cumple
+    signal vec_mem : std_logic_vector(8 downto 0);
+    signal dir_mem : integer range 0 to 35;
+    signal lib_rs_out : std_logic; 
+    signal lib_bd_out : std_logic_vector(7 downto 0);
+
+begin
+
+-- Validación de Alarma 1: Solo de Lunes (001) a Viernes (101)
+    coincidencia_al1 <= '1' when (rtc_hour = ALARMA1_HORA) and (rtc_min = ALARMA1_MIN) 
+                                and (unsigned(rtc_day) >= 1 and unsigned(rtc_day) <= 5) else '0';
+
+    -- Validación de Alarma 2: Todos los días (no evalúa rtc_day)
+    coincidencia_al2 <= '1' when (rtc_hour = ALARMA2_HORA) and (rtc_min = ALARMA2_MIN) else '0';
+
+    -- Validación de Alarma 3: Fin de semana (Sábado "110" o Domingo "111")
+    coincidencia_al3 <= '1' when (rtc_hour = ALARMA3_HORA) and (rtc_min = ALARMA3_MIN) 
+                                and (rtc_day = "110" or rtc_day = "111") else '0';
+
+    -- Condición maestra: Si ocurre cualquiera de las alarmas, se activa la señal
+    coincidencia_total <= coincidencia_al1 or coincidencia_al2 or coincidencia_al3;
+	 
+-- -- ====================================================================
+    -- PROCESO 1: FILTRO INTELIGENTE Y CONTROL DE LCD (CORREGIDO)
+    -- ====================================================================
+    process(clk)
+    begin
+        if rising_edge(clk) then
+            if (coincidencia_total = '1') and (unsigned(rtc_sec) < x"30") then
+                btn_config_filtrado <= '1'; -- '1' es INACTIVO (bloqueado para el RTC)
+            else
+                btn_config_filtrado <= btn_config; -- El botón llega al RTC normalmente
+            end if;
+
+            -- 2. Retención síncrona para la LCD
+            seg_anterior <= rtc_sec;
+            if rtc_sec /= seg_anterior then
+                lcd_sec  <= rtc_sec;
+                lcd_min  <= rtc_min;
+                lcd_hour <= rtc_hour;
+                lcd_day  <= rtc_day;
+            end if;
+        end if;
+    end process;
+	 
+  -- ====================================================================
+    -- PROCESO 2: LÓGICA DE ALARMA MULTI-HORARIO (Lee el botón RAW)
+    -- ====================================================================
+    process(clk)
+    begin
+        if rising_edge(clk) then
+            -- Evaluamos si estamos en el momento exacto de CUALQUIER alarma
+            if coincidencia_total = '1' then
+                
+                -- Si presionas el botón, se silencia la alarma que esté activa en este minuto
+                if (btn_config = '0') then
+                    alarma_silenciada <= '1';
+                end if;
+
+                -- Control de activación durante los primeros 30 segundos del minuto
+                if (rtc_sec < x"30") then
+                    if alarma_silenciada = '1' then
+                        alarm_active <= '0';
+                    else
+                        alarm_active <= '1';
+                    end if;
+                else
+                    alarm_active <= '0';
+                end if;
+                
+            else
+                -- Cuando cambia el minuto y deja de haber coincidencia,
+                -- apagamos todo y reseteamos el silencio para la próxima alarma
+                alarm_active      <= '0';
+                alarma_silenciada <= '0';
+            end if;
+        end if;
+    end process;
+    -- Instanciación del Lector RTC con el botón inteligente y protegido
+    u_rtc: entity work.rtc_ds3231
+    port map(
+        clk_50m => clk,
+        sda => sda,
+        scl => scl,
+        set_time_btn => btn_config_filtrado, 
+        sec_out => rtc_sec,
+        min_out => rtc_min,
+        hour_out => rtc_hour,
+        day_out => rtc_day 
+    );
+
+  
+    -- Lógica de Salidas (LEDs y Buzzer)
+    process(alarm_active, rtc_day)
+    begin
+        led_lun<='0'; led_mar<='0'; led_mier<='0'; led_jue<='0'; led_vie<='0'; led_sab<='0'; led_dom<='0';
+        if alarm_active = '1' then buzzer <= '0'; else buzzer <= '1'; end if; -- Buzzer activo en bajo
+
+        if alarm_active = '1' then
+            case rtc_day is
+                when "001" => led_lun <= '1';
+                when "010" => led_mar <= '1';
+                when "011" => led_mier <= '1';
+                when "100" => led_jue <= '1';
+                when "101" => led_vie <= '1';
+                when "110" => led_sab <= '1';
+                when "111" => led_dom <= '1';
+                when others => null;
+            end case;
+        end if;
+    end process;
+
+   -- Instanciación de la Librería de la LCD usando los registros estables
+    u_lib_lcd: entity work.LIB_LCD_INTESC
+    generic map( FPGA_CLK => 50_000_000, NUM_INST => 35 )
+    port map(
+        CLK          => clk,
+        HORA_IN      => lcd_hour,     -- Se queda para que la pantalla dibuje el reloj
+        MIN_IN       => lcd_min,      -- Se queda para que la pantalla dibuje el reloj
+        SEG_IN       => lcd_sec, 
+        DIA_IN       => lcd_day,
+        ALARM_ACTIVE => alarm_active,
+        -- Conectamos las banderas lógicas de tus alarmas:
+        ALARM1_ON    => coincidencia_al1, 
+        ALARM2_ON    => coincidencia_al2,
+        ALARM3_ON    => coincidencia_al3,
+        -- Salidas físicas y control
+        RS           => lib_rs_out, 
+        RW           => open, 
+        ENA          => open, 
+        BD_LCD       => lib_bd_out, 
+        DATA_A_LEER  => x"00", 
+        DIR_MEM      => dir_mem
+    );
+    vec_mem <= lib_rs_out & lib_bd_out;
+	 
+    -- Procesador físico de la LCD
+    u_procesador: entity work.PROCESADOR_LCD
+    generic map( FPGA_CLK => 50_000_000, NUM_INST => 35 )
+    port map(
+        CLK => clk, VECTOR_MEM => vec_mem, DIR_MEM => dir_mem,
+        C1A=>(others=>'0'), C2A=>(others=>'0'), C3A=>(others=>'0'), C4A=>(others=>'0'),
+        C5A=>(others=>'0'), C6A=>(others=>'0'), C7A=>(others=>'0'), C8A=>(others=>'0'),
+        RS => lcd_rs, RW => lcd_rw, ENA => lcd_ena, BD_LCD => open, DATA => lcd_data
+    );
+end main;
