@@ -50,3 +50,30 @@ Funciones:
 - Control Dinámico del Estado de Alarma y Buzzer: El módulo supervisa la señal alarm_active para controlar la salida física hacia la señal sonora. Al activarse la alarma, el sistema mantiene la alerta activa durante un intervalo temporal definido sin reingresar en bucles infinitos de disparo, centralizando la gestión del estado para prevenir problemas de múltiples controladores de señal.
 - Interconexión y Mapeo con la Librería Controladora de la LCD: Finalmente, el pastillero_top realiza la instanciación de la entidad controladora de la pantalla (LIB_LCD_INTESC). Le suministra las señales estabilizadas de tiempo, el día de la semana y, de forma directa, las señales lógicas de activación (ALARM1_ON, ALARM2_ON, ALARM3_ON).
 Gracias a este mapeo directo, el módulo principal delega la generación física de los comandos LCD, logrando que la pantalla cambie dinámicamente entre el modo de espera (mostrando la hora y el nombre completo del día) y el modo de alarma (desplegando el nombre exacto del medicamento programado para ese horario).
+
+
+### Módulo `LIB_LCD_INTESC.vhd`
+El módulo posee las siguientes señales de entrada y salida:
+- `CLK` — Entrada - Reloj principal de la FPGA de 50 MHz.
+- `HORA_IN` — Entrada - Bus de 8 bits con la hora actual en formato BCD.
+- `MIN_IN` — Entrada - Bus de 8 bits con los minutos actuales en formato BCD.
+- `SEG_IN` — Entrada - Bus de 8 bits con los segundos actuales en formato BCD.
+- `DIA_IN` — Entrada - Vector de 3 bits con el código del día de la semana leído del RTC. Determina qué nombre del día se decodifica y muestra en la pantalla en modo normal.
+- `ALARM_ACTIVE` — Entrada - Señal de control de estado de alarma (procedente del top). Alterna la visualización de la LCD entre el Modo Espera ('0', mostrando reloj y día) y el Modo Alarma ('1', mostrando el mensaje para toma del medicamento).
+- `ALARM1_ON, ALARM2_ON, ALARM3_ON` — Entrada - Banderas individuales de activación para cada una de las tres alarmas. Le indican al controlador qué texto de medicamento asignar dinámicamente a la Fila 2 durante una alarma.
+- `DATA_A_LEER` — Entrada - Bus de datos de entrada desde la LCD.
+- `DIR_MEM` — Entrada - Puntero entero de dirección de memoria.
+- `RS`  — Salida - Conecta al pin RS físico de la pantalla. Un '0' indica el envío de un comando de control o posición, y un '1' indica el envío de un carácter ASCII para ser impreso.
+- `RW` — Salida - Conecta al pin RW de la pantalla. Se mantiene en '0' para forzar la operación constante en modo escritura.
+- `ENA` — Salida - Genera el pulso de reloj necesario para que el controlador LCD capture el dato presente en el bus paralelos.
+- `BD_LCD` — Salida - Mapea directamente los 8 bits de datos de la posición de memoria seleccionada (INST(DIR_MEM)(7 downto 0)) hacia las líneas de datos D0 - D7 del display.
+
+El módulo LIB_LCD_INTESC_REVD actúa como la interfaz gráfica del sistema. Su objetivo principal es traducir la información lógica procesada por el módulo principal (pastillero_top) —como la hora en formato BCD, el día de la semana y los estados de las alarmas— en instrucciones y comandos legibles por el controlador integrado HD44780 de la pantalla LCD de 16x2.
+  Funciones:
+- Decodificación BCD a Caracteres Numéricos ASCII: El módulo recibe los vectores de tiempo de 8 bits en formato BCD (HORA_IN, MIN_IN, SEG_IN) y los descompone en sus dígitos de decenas y unidades. Estos valores numéricos se transforman posteriormente en caracteres mediante la función INT_NUM(), permitiendo construir dinámicamente la cadena de texto con formato de reloj digital (HORA: HH:MM:SS).
+- Generación del Nombre del Día:A partir de la entrada de 3 bits DIA_IN proveniente del RTC, el módulo ejecuta un proceso combinacional que asigna el nombre completo del día de la semana a una matriz de variables de caracteres (d1 a d9).
+- Decodificación de Medicamentos: En lugar de depender de comparaciones horarias internas, el módulo responde directamente a las señales lógicas enviadas por la entidad superior (ALARM1_ON, ALARM2_ON, ALARM3_ON y asigna el nombre del medicamento dependiendo de la alrma.
+- Máquina de Estados: El núcleo del módulo está construido sobre un arreglo tipo RAM de instrucciones (INST), de 36 posiciones de 9 bits cada una (8 bits de datos + 1 bit para la señal RS). La asignación de la memoria varía según la entrada ALARM_ACTIVE: cuando esta en modo normal (ALARM_ACTIVE = '0') se imprime la fecha y hora y cuando esta en modo alarma ALARM_ACTIVE = '1' se imprime el nombre del medicamento que se debe tomar.
+- Gestión del Bus Paralelo y Sincronización Interna: El módulo mapea el contenido de la memoria INST seleccionado por el puntero de dirección (DIR_MEM) hacia las salidas físicas de la pantalla.
+
+  
