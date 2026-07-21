@@ -26,6 +26,5 @@ Funcionamiento: Una vez que la FPGA establece la condición de inicio (START) de
 Posteriormente la FPGA vuelve a transmitir la dirección del DS3231, pero esta vez con el bit de lectura. A partir de ese momento, el RTC comienza a transmitir de manera secuencial el contenido de sus registros internos, después de leer el registro de segundos el dispositivo continúa enviando automáticamente los registros de minutos, horas y día de la semana, sin que sea necesario especificar nuevamente la dirección de cada uno de ellos. Durante este proceso, la FPGA confirma la correcta recepción de cada dato mediante señales ACK, indicando al RTC que continúe con la transmisión hasta obtener toda la información requerida.
 
 Finalmente, una vez recibidos los valores de segundos, minutos, horas y día de la semana, la FPGA envía una condición NACK para indicar que no se requieren más datos y posteriormente genera la condición de STOP, dando por terminada la comunicación.
-
 - `sec_out`  — Salida - Segundos leídos del DS3231.
 - 
