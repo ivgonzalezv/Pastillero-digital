@@ -11,16 +11,14 @@ entity LIB_LCD_INTESC is
     );
     port(
         CLK             : in  std_logic;
-        HORA_IN         : in  std_logic_vector(7 downto 0); 
-        MIN_IN          : in  std_logic_vector(7 downto 0); 
+        HORA_IN         : in  std_logic_vector(7 downto 0);
+        MIN_IN          : in  std_logic_vector(7 downto 0);
         SEG_IN          : in  std_logic_vector(7 downto 0);
         DIA_IN          : in  std_logic_vector(2 downto 0);
         ALARM_ACTIVE    : in  std_logic;
-        -- Entradas de control directo desde el TOP
-        ALARM1_ON       : in  std_logic; 
+        ALARM1_ON       : in  std_logic;
         ALARM2_ON       : in  std_logic;
         ALARM3_ON       : in  std_logic;
-        -- Puertos de la pantalla
         RS              : out std_logic;
         RW              : out std_logic;
         ENA             : out std_logic;
@@ -33,13 +31,32 @@ end entity LIB_LCD_INTESC;
 architecture Behavioral of LIB_LCD_INTESC is
     type RAM is array (0 to 35) of std_logic_vector(8 downto 0);
     signal INST : RAM;
+   
     signal h_dec, h_uni : integer;
     signal m_dec, m_uni : integer;
     signal s_dec, s_uni : integer;
+   
+    -- Letras para el indicador de día (hasta 9 caracteres)
     signal d1, d2, d3, d4, d5, d6, d7, d8, d9 : integer;
-    signal l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12 : integer; 
+   
+    -- Letras para el nombre de la pastilla (hasta 12 caracteres)
+    signal l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12 : integer;
+
+    -- ====================================================================
+    -- FUNCIÓN AUXILIAR: Evita la generación de 'f' (0xFF) en espacios vacíos
+    -- ====================================================================
+    function MOSTRAR_CHAR(letra : integer) return std_logic_vector is
+    begin
+        if letra = 32 or letra = 0 then
+            return CHAR_ASCII(x"20"); -- Espacio en blanco limpio en ASCII
+        else
+            return CHAR(letra);
+        end if;
+    end function;
+
 begin
 
+    -- Separación de dígitos
     h_dec <= to_integer(unsigned(HORA_IN(7 downto 4)));
     h_uni <= to_integer(unsigned(HORA_IN(3 downto 0)));
     m_dec <= to_integer(unsigned(MIN_IN(7 downto 4)));
@@ -48,11 +65,10 @@ begin
     s_uni <= to_integer(unsigned(SEG_IN(3 downto 0)));
 
     -- ====================================================================
-    -- ASIGNACIÓN DE DÍAS 
+    -- ASIGNACIÓN DE NOMBRES COMPLETOS DE DÍAS
     -- ====================================================================
     process(DIA_IN)
     begin
-        -- Inicializamos en blanco por seguridad
         d1<=32; d2<=32; d3<=32; d4<=32; d5<=32; d6<=32; d7<=32; d8<=32; d9<=32;
         case DIA_IN is
             when "001" => -- LUNES
@@ -62,99 +78,96 @@ begin
             when "011" => -- MIERCOLES
                 d1<=M; d2<=I; d3<=E; d4<=R; d5<=C; d6<=O; d7<=L; d8<=E; d9<=S;
             when "100" => -- JUEVES
-                d1<=J; d2<=U; d3<=V; d4<=E; d5<=S;
+                d1<=J; d2<=U; d3<=E; d4<=V; d5<=E; d6<=S;
             when "101" => -- VIERNES
                 d1<=V; d2<=I; d3<=E; d4<=R; d5<=N; d6<=E; d7<=S;
             when "110" => -- SABADO
                 d1<=S; d2<=A; d3<=B; d4<=A; d5<=D; d6<=O;
             when "111" => -- DOMINGO
                 d1<=D; d2<=O; d3<=M; d4<=I; d5<=N; d6<=G; d7<=O;
-            when others => 
+            when others =>
                 d1<=E; d2<=R; d3<=R; d4<=O; d5<=R;
         end case;
     end process;
 
- -- ==========================================
-    -- ASIGNACIÓN DE MEDICAMENTO POR HORARIO 
-    -- =======================================
+    -- ====================================================================
+    -- ASIGNACIÓN DE MEDICAMENTO POR HORARIO
+    -- ====================================================================
     process(ALARM1_ON, ALARM2_ON, ALARM3_ON)
     begin
-        -- Inicializamos todo vacío usando el código ASCII 32
         l1<=32; l2<=32; l3<=32; l4<=32; l5<=32; l6<=32;
         l7<=32; l8<=32; l9<=32; l10<=32; l11<=32; l12<=32;
 
-        -- Evaluamos cuál bandera activó el TOP
         if ALARM1_ON = '1' then
             -- Alarma 1: ASPIRINA
             l1<=A; l2<=S; l3<=P; l4<=I; l5<=R; l6<=I; l7<=N; l8<=A;
-            
+           
         elsif ALARM2_ON = '1' then
             -- Alarma 2: IBUPROFENO
             l1<=I; l2<=B; l3<=U; l4<=P; l5<=R; l6<=O; l7<=F; l8<=E; l9<=N; l10<=O;
-            
+           
         elsif ALARM3_ON = '1' then
             -- Alarma 3: PARACETAMOL
             l1<=P; l2<=A; l3<=R; l4<=A; l5<=C; l6<=E; l7<=T; l8<=A; l9<=M; l10<=O; l11<=L;
-            
+           
         else
-            -- Por si acaso ocurre un evento no contemplado
             l1<=M; l2<=E; l3<=D; l4<=I; l5<=C; l6<=A; l7<=M; l8<=E; l9<=N; l10<=T; l11<=O;
         end if;
     end process;
 
     -- ====================================================================
-    -- PROCESAMIENTO DE LAS INSTRUCCIONES DE LA MEMORIA DE LA LCD
+    -- INSTRUCCIONES RAM LCD (Usando MOSTRAR_CHAR)
     -- ====================================================================
     process(CLK)
     begin
         if rising_edge(CLK) then
-            INST(0) <= LCD_INI("00"); 
+            INST(0) <= LCD_INI("00");
             INST(1) <= CREAR_CHAR(1);
-            
+           
             if ALARM_ACTIVE = '0' then
                 -- === MODO ESPERA NORMAL ===
                 -- Fila 1: "HORA: HH:MM:SS"
-                INST(2) <= POS(1,1);
-                INST(3) <= CHAR(H); INST(4) <= CHAR(O); INST(5) <= CHAR(R); INST(6) <= CHAR(A);
-                INST(7) <= CHAR_ASCII(x"3A"); -- ":"
-                INST(8) <= INT_NUM(h_dec); INST(9) <= INT_NUM(h_uni); 
+                INST(2)  <= POS(1,1);
+                INST(3)  <= CHAR(H); INST(4) <= CHAR(O); INST(5) <= CHAR(R); INST(6) <= CHAR(A);
+                INST(7)  <= CHAR_ASCII(x"3A"); -- ":"
+                INST(8)  <= INT_NUM(h_dec); INST(9)  <= INT_NUM(h_uni);
                 INST(10) <= CHAR_ASCII(x"3A"); -- ":"
                 INST(11) <= INT_NUM(m_dec); INST(12) <= INT_NUM(m_uni);
                 INST(13) <= CHAR_ASCII(x"3A"); -- ":"
                 INST(14) <= INT_NUM(s_dec); INST(15) <= INT_NUM(s_uni);
-                
-                -- Fila 2: Imprime el día completo
+               
+                -- Fila 2: Día completo (Se usa MOSTRAR_CHAR)
                 INST(16) <= POS(2,1);
-                INST(17) <= CHAR(d1); INST(18) <= CHAR(d2); INST(19) <= CHAR(d3); 
-                INST(20) <= CHAR(d4); INST(21) <= CHAR(d5); INST(22) <= CHAR(d6); 
-                INST(23) <= CHAR(d7); INST(24) <= CHAR(d8); INST(25) <= CHAR(d9);
-                
-                -- Limpieza/Relleno de espacios al final de la fila 2
+                INST(17) <= MOSTRAR_CHAR(d1); INST(18) <= MOSTRAR_CHAR(d2); INST(19) <= MOSTRAR_CHAR(d3);
+                INST(20) <= MOSTRAR_CHAR(d4); INST(21) <= MOSTRAR_CHAR(d5); INST(22) <= MOSTRAR_CHAR(d6);
+                INST(23) <= MOSTRAR_CHAR(d7); INST(24) <= MOSTRAR_CHAR(d8); INST(25) <= MOSTRAR_CHAR(d9);
+               
+                -- Limpieza de espacios al final de la fila
                 INST(26) <= CHAR_ASCII(x"20"); INST(27) <= CHAR_ASCII(x"20");
-                
-                -- Delays internos estructurados
-                INST(28) <= BUCLE_FIN(2); INST(29) <= BUCLE_FIN(2); INST(30) <= BUCLE_FIN(2);
+               
+                -- Delays internos
+                INST(28) <= BUCLE_FIN(2);  INST(29) <= BUCLE_FIN(2);  INST(30) <= BUCLE_FIN(2);
                 INST(31) <= BUCLE_FIN(30); INST(32) <= BUCLE_FIN(30); INST(33) <= BUCLE_FIN(30);
                 INST(34) <= BUCLE_FIN(30); INST(35) <= BUCLE_FIN(30);
-                
+               
             else
                 -- === MODO ALARMA ACTIVADA ===
-                -- Fila 1: "TOMAR MEDICAMENTO:" 
-                INST(2) <= POS(1,1);
-                INST(3) <= CHAR(T); INST(4) <= CHAR(O); INST(5) <= CHAR(M); INST(6) <= CHAR(A); INST(7) <= CHAR(R);
-                INST(8) <= CHAR_ASCII(x"3A"); -- ":"
-                INST(9) <= CHAR_ASCII(x"20"); INST(10) <= CHAR_ASCII(x"20"); INST(11) <= CHAR_ASCII(x"20");
+                -- Fila 1: "TOMAR:"
+                INST(2)  <= POS(1,1);
+                INST(3)  <= CHAR(T); INST(4) <= CHAR(O); INST(5) <= CHAR(M); INST(6) <= CHAR(A); INST(7) <= CHAR(R);
+                INST(8)  <= CHAR_ASCII(x"3A"); -- ":"
+                INST(9)  <= CHAR_ASCII(x"20"); INST(10) <= CHAR_ASCII(x"20"); INST(11) <= CHAR_ASCII(x"20");
                 INST(12) <= CHAR_ASCII(x"20"); INST(13) <= CHAR_ASCII(x"20"); INST(14) <= CHAR_ASCII(x"20"); INST(15) <= CHAR_ASCII(x"20");
-                
-                -- Fila 2: Imprime el nombre entero asignado por horario (
+               
+                -- Fila 2: Nombre del medicamento (Se usa MOSTRAR_CHAR)
                 INST(16) <= POS(2,1);
-                INST(17) <= CHAR(l1); INST(18) <= CHAR(l2); INST(19) <= CHAR(l3); 
-                INST(20) <= CHAR(l4); INST(21) <= CHAR(l5); INST(22) <= CHAR(l6);
-                INST(23) <= CHAR(l7); INST(24) <= CHAR(l8); INST(25) <= CHAR(l9);
-                INST(26) <= CHAR(l10); INST(27) <= CHAR(l11); INST(28) <= CHAR(l12);
-                
-                -- Ajuste y cierre seguro del bucle de instrucciones RAM
-                INST(29) <= BUCLE_FIN(2); INST(30) <= BUCLE_FIN(2);
+                INST(17) <= MOSTRAR_CHAR(l1);  INST(18) <= MOSTRAR_CHAR(l2);  INST(19) <= MOSTRAR_CHAR(l3);
+                INST(20) <= MOSTRAR_CHAR(l4);  INST(21) <= MOSTRAR_CHAR(l5);  INST(22) <= MOSTRAR_CHAR(l6);
+                INST(23) <= MOSTRAR_CHAR(l7);  INST(24) <= MOSTRAR_CHAR(l8);  INST(25) <= MOSTRAR_CHAR(l9);
+                INST(26) <= MOSTRAR_CHAR(l10); INST(27) <= MOSTRAR_CHAR(l11); INST(28) <= MOSTRAR_CHAR(l12);
+               
+                -- Cierre seguro del bucle
+                INST(29) <= BUCLE_FIN(2);  INST(30) <= BUCLE_FIN(2);
                 INST(31) <= BUCLE_FIN(30); INST(32) <= BUCLE_FIN(30); INST(33) <= BUCLE_FIN(30);
                 INST(34) <= BUCLE_FIN(30); INST(35) <= BUCLE_FIN(30);
             end if;
@@ -162,5 +175,5 @@ begin
     end process;
 
     BD_LCD <= INST(DIR_MEM)(7 downto 0);
-    RS     <= INST(DIR_MEM)(8); 
+    RS     <= INST(DIR_MEM)(8);
 end architecture Behavioral;
